@@ -1,12 +1,11 @@
 # Import the dependencies.
+from flask import Flask, jsonify
+import numpy as np
 import sqlalchemy
-import pandas as pd
-import matplotlib.pyplot as plt
 from sqlalchemy.ext.automap import automap_base
 from sqlalchemy.orm import Session
 from sqlalchemy import create_engine, func
-from flask import Flask, jsonify
-from datetime import datetime, timedelta
+import datetime as dt
 
 
 # Database Setup
@@ -28,115 +27,124 @@ Station = Base.classes.station
 session = Session(engine)
 
 
-# Flask Setup
+# Flask Setup (creating the app)
 app = Flask(__name__)
 
 # Flask Routes
 
-# Define the homepage route
+# Define what to do when the user hits the homepage
 @app.route("/")
-def home():
-    """List all available routes."""
-    # Create a dictionary of available routes
-    routes = {
-        "1. Home": "/",
-        "2. Precipitation": "/api/v1.0/precipitation",
-        "3. Stations": "/api/v1.0/stations",
-        "4. Temperature Observations": "/api/v1.0/tobs",
-        "5. Temperature Statistics (Start Date)": "/api/v1.0/<start>",
-        "6. Temperature Statistics (Start-End Dates)": "/api/v1.0/<start>/<end>",
-    }
-    return jsonify(routes)
+def homepage():
+    return """ <h1> Welcome to Honolulu, Hawaii Climate API! </h1>
+    <h3> The available routes are: </h3>
+    <ul>
+    <li><a href = "/api/v1.0/precipitation"> Precipitation</a>: <strong>/api/v1.0/precipitation</strong> </li>
+    <li><a href = "/api/v1.0/stations"> Stations </a>: <strong>/api/v1.0/stations</strong></li>
+    <li><a href = "/api/v1.0/tobs"> TOBS </a>: <strong>/api/v1.0/tobs</strong></li>
+    <li>To retrieve the minimum, average, and maximum temperatures for a specific start date, use <strong>/api/v1.0/&ltstart&gt</strong> (replace start date in yyyy-mm-dd format)</li>
+    <li>To retrieve the minimum, average, and maximum temperatures for a specific start-end range, use <strong>/api/v1.0/&ltstart&gt/&ltend&gt</strong> (replace start and end date in yyyy-mm-dd format)</li>
+    </ul>
+    """
 
-# Define the precipitation route
+# Define what to do when the user hits the precipitation URL
 @app.route("/api/v1.0/precipitation")
 def precipitation():
-    """Return the JSON representation of precipitation data for the last 12 months."""
-    # Query1 code
-    query1 = """
-    SELECT date, prcp
-    FROM measurement
-    WHERE date >= (
-    SELECT date(MAX(date), '-1 year')
-    FROM measurement
-    )
-    ORDER BY date;
-    """
-    results = engine.execute(query1).fetchall()
-    precipitation_data = {date: prcp for date, prcp in results}
-    return jsonify(precipitation_data)
+    # Create the session
+    session = Session(engine)
 
-# Define the stations route
+    # Query precipitation data from last 12 months from the most recent date from Measurement table
+    prcp_data = session.query(Measurement.date, Measurement.prcp).filter(Measurement.date >= date_prev_year()).all()
+    
+    # Close the session                   
+    session.close()
+
+    # Create a dictionary from the row data and append to a list of prcp_list
+    prcp_list = []
+    for date, prcp in prcp_data:
+        prcp_dict = {}
+        prcp_dict["date"] = date
+        prcp_dict["prcp"] = prcp
+        prcp_list.append(prcp_dict)
+
+    # Return a list of jsonified precipitation data for the previous 12 months 
+    return jsonify(prcp_list)
+
+# Define what to do when the user hits the station URL
 @app.route("/api/v1.0/stations")
 def stations():
-    """Return a JSON list of stations."""
-    # Query2 code
-    query2 = """
-    SELECT DISTINCT station
-    FROM measurement;
-    """
-    results = engine.execute(query2).fetchall()
-    station_data = [row[0] for row in results]
-    return jsonify(station_data)
+    # Create the session
+    session = Session(engine)
 
+    # Query station data from the Station dataset
+    station_data = session.query(Station.station).all()
 
-# Define the temperature observations route
+    # Close the session                   
+    session.close()
+
+    # Convert list of tuples into normal list
+    station_list = list(np.ravel(station_data))
+
+    # Return a list of jsonified station data
+    return jsonify(station_list)
+
+# Define what to do when the user hits the URL
 @app.route("/api/v1.0/tobs")
 def tobs():
-    """Return a JSON list of temperature observations for the previous year."""
-    # Query 5 code
-    query5 = """
-    SELECT MAX(date) 
-    FROM measurement;
-    """
-    most_recent_date = engine.execute(query5).fetchone()[0]
-    one_year_ago = (datetime.strptime(most_recent_date, '%Y-%m-%d') - timedelta(days=365)).date()
-    
-    query5b = session.query(Measurement.date, Measurement.tobs).filter(Measurement.date >= one_year_ago).all()
+    # Create our session
+    session = Session(engine)
 
-    tobs_data = []
-    for date, tobs in query5b:
-        tobs_data.append({"date": date, "tobs": tobs})
-    return jsonify(tobs_data)
+    # Query tobs data from last 12 months from the most recent date from Measurement table
+    tobs_data = session.query(Measurement.date, Measurement.tobs).filter(Measurement.station == 'USC00519281').\
+                        filter(Measurement.date >= date_prev_year()).all()
 
+    # Close the session                   
+    session.close()
 
-# Define the temperature statistics route
+    # Create a dictionary from the row data and append to a list of tobs_list
+    tobs_list = []
+    for date, tobs in tobs_data:
+        tobs_dict = {}
+        tobs_dict["date"] = date
+        tobs_dict["tobs"] = tobs
+        tobs_list.append(tobs_dict)
+
+    # Return a list of jsonified tobs data for the previous 12 months
+    return jsonify(tobs_list)
+
+# Define what to do when the user hits the URL with a specific start date or start-end range
 @app.route("/api/v1.0/<start>")
 @app.route("/api/v1.0/<start>/<end>")
-def temperature_stats(start, end=None):
-    """
-    Return a JSON list of the minimum temperature, average temperature,
-    and maximum temperature for a specified start or start-end range.
-    """
-    # Query 6 code 
-    query6 = """
-    SELECT MIN(tobs) AS min_temp, 
-    AVG(tobs) AS avg_temp, 
-    MAX(tobs) AS max_temp
-    FROM measurement
-    WHERE date >= :start_date
-    """
-
-    if end:
-        query6 += " AND date <= :end_date"
+def cal_temp(start=None, end=None):
+    # Create the session
+    session = Session(engine)
     
-    if end:
-        results = engine.execute(query6, start_date=start, end_date=end).fetchall()
+    # Make a list to query (the minimum, average and maximum temperature)
+    sel=[func.min(Measurement.tobs), func.avg(Measurement.tobs), func.max(Measurement.tobs)]
+    
+    # Check if there is an end date then do the task accordingly
+    if end == None: 
+        # Query the data from start date to the most recent date
+        start_data = session.query(*sel).\
+                            filter(Measurement.date >= start).all()
+        # Convert list of tuples into normal list
+        start_list = list(np.ravel(start_data))
+
+        # Return a list of jsonified minimum, average and maximum temperatures for a specific start date
+        return jsonify(start_list)
     else:
-        results = engine.execute(query6, start_date=start).fetchall()
+        # Query the data from start date to the end date
+        start_end_data = session.query(*sel).\
+                            filter(Measurement.date >= start).\
+                            filter(Measurement.date <= end).all()
+        # Convert list of tuples into normal list
+        start_end_list = list(np.ravel(start_end_data))
 
-    min_temp, avg_temp, max_temp = results[0]
+        # Return a list of jsonified minimum, average and maximum temperatures for a specific start-end date range
+        return jsonify(start_end_list)
+
+    # Close the session                   
+    session.close()
     
-    stats_data = {
-        "start_date": start,
-        "end_date": end,
-        "min_temperature": min_temp,
-        "avg_temperature": avg_temp,
-        "max_temperature": max_temp
-    }
-
-    return jsonify(stats_data)
-
-
-if __name__ == '__main__':
-    app.run(debug=True)
+# Define main branch 
+if __name__ == "__main__":
+    app.run(debug = True)
